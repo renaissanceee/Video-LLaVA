@@ -17,18 +17,19 @@ from abc import ABC, abstractmethod
 
 import torch
 import torch.nn as nn
-
+import torch.nn.functional as F
 from .multimodal_encoder.builder import build_image_tower, build_video_tower
 from .multimodal_projector.builder import build_vision_projector
 
 from videollava.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
-
+from utils.station import STATION, mi_max
 
 class LlavaMetaModel:
 
     def __init__(self, config):
         super(LlavaMetaModel, self).__init__(config)
-
+        config.mm_image_tower = "/leonardo_scratch/fast/EUHPC_D26_093/ckpt_backup/LanguageBind/LanguageBind_Image"
+        config.mm_video_tower = "/leonardo_scratch/fast/EUHPC_D26_093/ckpt_backup/LanguageBind/LanguageBind_Video_merge"
         if getattr(config, "mm_image_tower", None) is not None:
             self.image_tower = build_image_tower(config, delay_load=True)
         if getattr(config, "mm_video_tower", None) is not None:
@@ -253,7 +254,6 @@ class LlavaMetaForCausalLM(ABC):
         cur_image_idx = 0
         for batch_idx, cur_input_ids in enumerate(input_ids):
             num_images = (cur_input_ids == IMAGE_TOKEN_INDEX).sum()
-            # print(num_images, cur_input_ids)
             if num_images == 0:
                 cur_image_features = image_features[cur_image_idx]
                 cur_input_embeds_1 = self.get_model().embed_tokens(cur_input_ids)
@@ -275,22 +275,44 @@ class LlavaMetaForCausalLM(ABC):
             cur_input_embeds_no_im = torch.split(cur_input_embeds, split_sizes, dim=0)
             cur_new_input_embeds = []
             cur_new_labels = []
-
+            # print(num_images) # 8
             for i in range(num_images + 1):
                 cur_new_input_embeds.append(cur_input_embeds_no_im[i])
                 cur_new_labels.append(cur_labels_noim[i])
                 if i < num_images:
-                    # print(cur_image_idx)
-                    cur_image_features = image_features[cur_image_idx]
+                    cur_image_features = image_features[cur_image_idx] # [257, 4096]
                     cur_image_idx += 1
                     cur_new_input_embeds.append(cur_image_features)
                     cur_new_labels.append(torch.full((cur_image_features.shape[0],), IGNORE_INDEX, device=cur_labels.device, dtype=cur_labels.dtype))
-
             cur_new_input_embeds = torch.cat(cur_new_input_embeds)
             cur_new_labels = torch.cat(cur_new_labels)
-
             new_input_embeds.append(cur_new_input_embeds)
             new_labels.append(cur_new_labels)
+
+        # print("before: ", cur_new_input_embeds.shape[0])# JJ
+
+        STATION["inst_len"] = cur_input_embeds_no_im[0].shape[0]
+        STATION["prompt_len"] = cur_input_embeds_no_im[-1].shape[0]
+        STATION["vis_len"] = cur_new_input_embeds.shape[0] - STATION["inst_len"] - STATION["prompt_len"]
+
+        ##################################
+        # [JJ] Prune V/T tokens
+        if STATION["modify"] == "mi_max":
+            h_vis = cur_new_input_embeds[STATION["inst_len"]:STATION["inst_len"]+STATION["vis_len"],:]  ## [257*8, 4096]
+            h_text = cur_input_embeds_no_im[-1]  ## [25, 4096]
+            visual_prune_num = STATION["vis_len"] - STATION["v_ratio"] -num_images  ## 257*8-194-8
+            h_vis_norm, h_text_norm = F.normalize(h_vis, dim=-1).float(), F.normalize(h_text,dim=-1).float()
+            prune_idx = mi_max(visual_prune_num, None, h_vis_norm, h_text_norm).to(h_vis.device)
+            h_vis = h_vis[~torch.isin(torch.arange(h_vis.shape[0], device=h_vis.device), prune_idx)]
+            cur_new_input_embeds = torch.cat([cur_new_input_embeds[:STATION["inst_len"],:], h_vis, cur_new_input_embeds[STATION["inst_len"]+STATION["vis_len"]:,:]],dim=0)
+            # print("after: ", cur_new_input_embeds.shape[0]) # JJ
+            ## post-processing ##
+            new_input_embeds = [cur_new_input_embeds]
+            cur_new_labels = torch.full((cur_new_input_embeds.shape[0],), IGNORE_INDEX, device=cur_labels.device, dtype=cur_labels.dtype)
+            new_labels = [cur_new_labels]
+        ##################################
+
+
 
         # Truncate sequences to max length as image embeddings can make the sequence longer
         tokenizer_model_max_length = getattr(self.config, 'tokenizer_model_max_length', None)
@@ -306,6 +328,7 @@ class LlavaMetaForCausalLM(ABC):
         new_labels_padded = torch.full((batch_size, max_len), IGNORE_INDEX, dtype=new_labels[0].dtype, device=new_labels[0].device)
         attention_mask = torch.zeros((batch_size, max_len), dtype=attention_mask.dtype, device=attention_mask.device)
         position_ids = torch.zeros((batch_size, max_len), dtype=position_ids.dtype, device=position_ids.device)
+
 
         for i, (cur_new_embed, cur_new_labels) in enumerate(zip(new_input_embeds, new_labels)):
             cur_len = cur_new_embed.shape[0]
@@ -328,7 +351,8 @@ class LlavaMetaForCausalLM(ABC):
                     attention_mask[i, :cur_len] = True
                     position_ids[i, :cur_len] = torch.arange(0, cur_len, dtype=position_ids.dtype, device=position_ids.device)
 
-        new_input_embeds = torch.stack(new_input_embeds_padded, dim=0)
+        new_input_embeds = torch.stack(new_input_embeds_padded, dim=0) # [1, 2116, 4096]
+
 
         if _labels is None:
             new_labels = None

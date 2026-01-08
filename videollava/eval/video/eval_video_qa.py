@@ -5,30 +5,16 @@ import json
 import ast
 from multiprocessing.pool import Pool
 from tqdm import tqdm
-
-def parse_args():
-    parser = argparse.ArgumentParser(description="question-answer-generation-using-gpt-3")
-    parser.add_argument("--pred_path", default=r'', help="The path to file containing prediction.")
-    parser.add_argument("--output_dir", default=r'', help="The path to save annotation json files.")
-    parser.add_argument("--output_json", default=r'', help="The path to save annotation final combined json file.")
-    parser.add_argument("--api_key", default="", help="OpenAI API key.")
-    parser.add_argument("--api_base", default="", type=str, help="OpenAI API base.")
-    parser.add_argument("--num_tasks", default=1, type=int, help="Number of splits.")
-    args = parser.parse_args()
-    return args
+import shutil
 
 
 def annotate(prediction_set, caption_files, output_dir, args):
-    """
-    Evaluates question and answer pairs using GPT-3
-    Returns a score for correctness.
-    """
     # Set the OpenAI API key.
     openai.api_key = args.api_key
     if args.api_base is not None:
         openai.api_base = args.api_base
     for file in caption_files:
-        key = file[:-5] # Strip file extension
+        key = file[:-5]  # Strip file extension
         qa_set = prediction_set[key]
         question = qa_set['q']
         answer = qa_set['a']
@@ -75,35 +61,10 @@ def annotate(prediction_set, caption_files, output_dir, args):
         except Exception as e:
             print(f"Error processing file '{key}': {e}")
 
-
-def main():
-    """
-    Main function to control the flow of the program.
-    """
-    # Parse arguments.
-    args = parse_args()
-
+def evaluate(args):
     file = open(args.pred_path)
     new_pred_contents = [eval(i.strip()) for i in file.readlines()]
 
-    '''
-    # Dictionary to store the count of occurrences for each video_id
-    video_id_counts = {}
-    new_pred_contents = []
-
-    # Iterate through each sample in pred_contents
-    for sample in pred_contents:
-        video_id = sample['video_name']
-        if video_id in video_id_counts:
-            video_id_counts[video_id] += 1
-        else:
-            video_id_counts[video_id] = 0
-
-        # Create a new sample with the modified key
-        new_sample = sample
-        new_sample['video_name'] = f"{video_id}_{video_id_counts[video_id]}"
-        new_pred_contents.append(new_sample)
-    '''
     # Generating list of id's and corresponding files
     id_list = [x['id'] for x in new_pred_contents]
     caption_files = [f"{id}.json" for id in id_list]
@@ -122,7 +83,6 @@ def main():
         pred = sample['pred']
         qa_set = {"q": question, "a": answer, "pred": pred}
         prediction_set[id] = qa_set
-
     num_tasks = args.num_tasks
 
     # While loop to ensure that all captions are processed.
@@ -195,12 +155,35 @@ def main():
 
     average_score = score_sum / count
     accuracy = yes_count / (yes_count + no_count)
-    print("Yes count:", yes_count)
-    print("No count:", no_count)
+    # print("Yes count:", yes_count)
+    # print("No count:", no_count)
     print("Accuracy:", accuracy)
     print("Average score:", average_score)
+    shutil.rmtree(args.output_dir)
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="question-answer-generation-using-gpt-3")
+    parser.add_argument("--pred", default='predicts_prune/tgif')
+    # parser.add_argument("--api_key", help="OpenAI API key.")
+    # parser.add_argument("--api_base", default="https://api.openai.com/v1", type=str, help="OpenAI API base.")
+    parser.add_argument("--num_tasks", default=8, type=int, help="Number of splits.")
+    args = parser.parse_args()
+    args.output_dir = os.path.join(os.path.dirname(args.pred), "gpt3.5-0.0")
+    if os.path.isdir(args.pred):
+        json_files = [
+            os.path.join(args.pred, f)
+            for f in os.listdir(args.pred)
+            if f.endswith("_predictions.json")
+        ]
+    elif args.pred.endswith(".json"):
+        json_files = [args.pred]
+    else:
+        raise ValueError("pred must .json or a dir")
+
+    for cur in json_files:
+        args.pred_path = cur
+        args.output_json = cur.replace("predictions.json", "results.json")
+        evaluate(args)
+
 
