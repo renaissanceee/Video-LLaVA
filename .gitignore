@@ -1,0 +1,14 @@
+**hydra**
+*.pkl
+__pycache__
+.vscode
+
+*.sh
+__pycache__/
+playground_old/
+output*/
+predict*/
+result*/
+*.jpg
+*.png
+*.log
