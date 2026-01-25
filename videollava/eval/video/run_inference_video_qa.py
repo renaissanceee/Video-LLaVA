@@ -104,10 +104,7 @@ def run_inference(args):
         for fmt in tqdm(video_formats):  # Added this line
             temp_path = os.path.join(args.video_dir, f"{video_name}{fmt}")
             if os.path.exists(temp_path):
-                video_path = temp_path
-                # try:
-                # Run inference on the video and add the output to the list
-                output = get_model_output(model, processor['video'], tokenizer, video_path, question, args)
+                output = get_model_output(model, processor['video'], tokenizer, temp_path, question, args)
                 sample_set['pred'] = output
                 ans_file.write(json.dumps(sample_set) + "\n")
                 print(f"-------- response: {output} --------")
@@ -122,7 +119,7 @@ if __name__ == "__main__":
     parser.add_argument('--dataset', default="msrvtt")
     parser.add_argument('--output_dir', default="./predicts_prune")
     parser.add_argument('--modify', default="mi_max")
-    parser.add_argument("--v_ratio", type=int, default=194)
+    parser.add_argument("--v_ratio", type=int, default=114)
     parser.add_argument("--len", type=int, default=1000)
     parser.add_argument("--T", type=float, default=0.01)
     parser.add_argument("--num_chunks", type=int, default=1)

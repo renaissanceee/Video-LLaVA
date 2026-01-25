@@ -30,6 +30,8 @@ def calculate_metrics(file_path):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--pred", type=str, default="predicts_prune/tgif") # "predicts_prune/tgif/sparsevlm_results.json"
+    parser.add_argument("--key", default='')
+
 
     args = parser.parse_args()
     print(f"   Method   &  Acc  &  Score")
@@ -37,7 +39,7 @@ if __name__ == "__main__":
         json_files = [
             os.path.join(args.pred, f)
             for f in os.listdir(args.pred)
-            if f.endswith("_results.json")
+            if f.endswith("_results.json") and args.key in f
         ]
     elif args.pred.endswith(".json"):
         json_files = [args.pred]

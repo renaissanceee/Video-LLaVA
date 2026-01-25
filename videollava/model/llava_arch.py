@@ -22,7 +22,7 @@ from .multimodal_encoder.builder import build_image_tower, build_video_tower
 from .multimodal_projector.builder import build_vision_projector
 
 from videollava.constants import IGNORE_INDEX, IMAGE_TOKEN_INDEX, DEFAULT_IMAGE_PATCH_TOKEN, DEFAULT_IM_START_TOKEN, DEFAULT_IM_END_TOKEN
-from utils.station import STATION, mi_max
+from utils.station import STATION, SIM_FUNC
 
 class LlavaMetaModel:
 
@@ -297,12 +297,13 @@ class LlavaMetaForCausalLM(ABC):
 
         ##################################
         # [JJ] Prune V/T tokens
-        if STATION["modify"] == "mi_max":
+        if "mi" in STATION["modify"]:
+            measure_func = SIM_FUNC.get(STATION["modify"])
             h_vis = cur_new_input_embeds[STATION["inst_len"]:STATION["inst_len"]+STATION["vis_len"],:]  ## [257*8, 4096]
             h_text = cur_input_embeds_no_im[-1]  ## [25, 4096]
             visual_prune_num = STATION["vis_len"] - STATION["v_ratio"] -num_images  ## 257*8-194-8
             h_vis_norm, h_text_norm = F.normalize(h_vis, dim=-1).float(), F.normalize(h_text,dim=-1).float()
-            prune_idx = mi_max(visual_prune_num, None, h_vis_norm, h_text_norm).to(h_vis.device)
+            prune_idx = measure_func(visual_prune_num, None, h_vis_norm, h_text_norm).to(h_vis.device)
             h_vis = h_vis[~torch.isin(torch.arange(h_vis.shape[0], device=h_vis.device), prune_idx)]
             cur_new_input_embeds = torch.cat([cur_new_input_embeds[:STATION["inst_len"],:], h_vis, cur_new_input_embeds[STATION["inst_len"]+STATION["vis_len"]:,:]],dim=0)
             # print("after: ", cur_new_input_embeds.shape[0]) # JJ
@@ -311,9 +312,7 @@ class LlavaMetaForCausalLM(ABC):
             cur_new_labels = torch.full((cur_new_input_embeds.shape[0],), IGNORE_INDEX, device=cur_labels.device, dtype=cur_labels.dtype)
             new_labels = [cur_new_labels]
         ##################################
-
-
-
+        # print("after: ", cur_new_input_embeds.shape[0])  # JJ
         # Truncate sequences to max length as image embeddings can make the sequence longer
         tokenizer_model_max_length = getattr(self.config, 'tokenizer_model_max_length', None)
         if tokenizer_model_max_length is not None:

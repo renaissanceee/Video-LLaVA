@@ -62,6 +62,7 @@ def annotate(prediction_set, caption_files, output_dir, args):
             print(f"Error processing file '{key}': {e}")
 
 def evaluate(args):
+    print("########## ", args.pred_path, " ##########")
     file = open(args.pred_path)
     new_pred_contents = [eval(i.strip()) for i in file.readlines()]
 
@@ -157,7 +158,7 @@ def evaluate(args):
     accuracy = yes_count / (yes_count + no_count)
     # print("Yes count:", yes_count)
     # print("No count:", no_count)
-    print("Accuracy:", accuracy)
+    print("Accuracy:", accuracy*100)
     print("Average score:", average_score)
     shutil.rmtree(args.output_dir)
 
@@ -165,16 +166,19 @@ def evaluate(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="question-answer-generation-using-gpt-3")
     parser.add_argument("--pred", default='predicts_prune/tgif')
-    # parser.add_argument("--api_key", help="OpenAI API key.")
-    # parser.add_argument("--api_base", default="https://api.openai.com/v1", type=str, help="OpenAI API base.")
+    parser.add_argument("--key", default='')
+    parser.add_argument("--api_key",default=None,help="OpenAI API key.")
+    parser.add_argument("--api_base", default="https://api.openai.com/v1", type=str, help="OpenAI API base.")
     parser.add_argument("--num_tasks", default=8, type=int, help="Number of splits.")
     args = parser.parse_args()
     args.output_dir = os.path.join(os.path.dirname(args.pred), "gpt3.5-0.0")
+    if args.api_key is None:
+        args.api_key = os.getenv("OPENAI_API_KEY")
     if os.path.isdir(args.pred):
         json_files = [
             os.path.join(args.pred, f)
             for f in os.listdir(args.pred)
-            if f.endswith("_predictions.json")
+            if f.endswith("_predictions.json") and args.key in f
         ]
     elif args.pred.endswith(".json"):
         json_files = [args.pred]

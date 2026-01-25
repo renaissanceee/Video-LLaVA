@@ -25,7 +25,6 @@ def cosine_mean_trim(prune_num, important_indices, h_vis, h_text):
     sim_trim = torch.topk(sim, k=5, dim=-1).values  # only consider top5-highest-sim token
     mi_proxy = sim_trim.mean(dim=1)  # avg_similarity -> abs(sim)??
     prune_idx = torch.argsort(mi_proxy, descending=False)[:prune_num]
-    # import pdb;pdb.set_trace()
     return prune_idx
 
 def cosine_maxmin(prune_num, important_indices, h_vis, h_text):
@@ -117,10 +116,81 @@ def mi_max(prune_num, important_indices, h_vis, h_text):
     mi_per_token = pt_on_pv * (torch.log(pt_on_pv + 1e-8) - torch.log(p_t + 1e-8))
     mi_proxy = mi_per_token.max(dim=-1).values
     cls_idx = torch.arange(0, h_vis.shape[0], 257, device=h_vis.device)
-    # print("cls_idx: ", cls_idx)
     mi_proxy[cls_idx] = torch.inf  # [cls]: not considered
     prune_idx = torch.argsort(mi_proxy, descending=False)[:prune_num]
+
     return prune_idx
+
+
+def mi_max_full(prune_num, important_indices, h_vis, h_text):
+    temperature = STATION["temperature"]
+    vis_len = h_vis.shape[0]
+    weight = 1
+    keep_round1 = 5
+    ## CLS ##
+    cls_idx = torch.arange(0, vis_len, 257, device=h_vis.device)
+    is_cls = torch.zeros(vis_len, dtype=torch.bool, device=h_vis.device)
+    is_cls[cls_idx] = True
+    valid_indices = torch.where(~is_cls)[0]
+
+    # 实际可参与选择的 token 数
+    valid_len = vis_len - cls_idx.numel()
+    keep_total = valid_len - prune_num
+
+    # p(t|v)
+    sim_vt = (h_vis @ h_text.T) / temperature
+    pt_on_pv = F.softmax(sim_vt, dim=-1)
+
+    # p(v|v)
+    sim_vv = (h_vis @ h_vis.T) / temperature
+    pv_on_pv = F.softmax(sim_vv, dim=-1)
+
+    p_t = pt_on_pv.mean(dim=0, keepdim=True)
+    p_v = torch.tensor(1.0 / vis_len, device=h_vis.device)
+
+    # PMI
+    pmi_vt_mat = torch.log(pt_on_pv + 1e-8) - torch.log(p_t + 1e-8)
+    pmi_vv_mat = torch.log(pv_on_pv + 1e-8) - torch.log(p_v + 1e-8)
+
+
+    important_indices = torch.full(
+        (keep_total,), -1, dtype=torch.long, device=h_vis.device
+    )
+
+    # --------------------
+    # round 1: relevance (MI_vt), top-k
+    # --------------------
+    relevance = pmi_vt_mat[valid_indices].max(dim=-1).values
+    topk = torch.argsort(relevance, descending=True)[:keep_round1]
+    important_indices[:keep_round1] = valid_indices[topk]
+
+    # --------------------
+    # round 2: greedy
+    # --------------------
+    for counter in range(keep_round1, keep_total):
+        mask = torch.ones(vis_len, dtype=torch.bool, device=h_vis.device)
+        mask[important_indices[:counter]] = False
+        mask[cls_idx] = False  # ❗ CLS 永远不参与 greedy
+
+        remain_indices = torch.where(mask)[0]
+        selected_indices = important_indices[:counter]
+
+        relevance = pmi_vt_mat[remain_indices].max(dim=-1).values
+        redundancy = pmi_vv_mat[remain_indices][:, selected_indices].max(dim=-1).values
+
+        score = relevance - weight * redundancy
+        important_indices[counter] = remain_indices[torch.argmax(score)]
+
+    # --------------------
+    # final prune index
+    # --------------------
+    final_mask = torch.ones(vis_len, dtype=torch.bool, device=h_vis.device)
+    final_mask[important_indices] = False
+    final_mask[cls_idx] = False  # keep  CLS
+
+    prune_idx = torch.where(final_mask)[0]
+    return prune_idx
+
 
 def mi_max_round2(prune_num, important_indices, h_vis, h_text, ):
     temperature = STATION["temperature"]
@@ -164,6 +234,7 @@ SIM_FUNC = {"w_o": None,
            "cos_maxmin": cosine_maxmin,
            "cos_minmax": cosine_minmax,
            "mi_max": mi_max,
+            "mi_max_full":mi_max_full,
            "mi_minmax": mi_minmax,
            "mi_mean": mi_mean,
            "mi_mean_trim": mi_mean_trim,
